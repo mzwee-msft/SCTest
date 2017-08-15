@@ -4,7 +4,10 @@ Param
 	[String] $SourceControlName,
 
 	[Parameter(Mandatory=$true)]
-	[Object] $SourceControlInfo
+	[Object] $SourceControlInfo,
+
+    [Parameter(Mandatory=$false)]
+	[Switch] $TestMode
 )
 
 $SourceControlRunbookName = "Sync-SourceControl.ps1"
@@ -12,12 +15,12 @@ $InformationalLevel = "Informational"
 $WarningLevel = "Warning"
 $ErrorLevel = "Error"
 $SucceededLevel = "Succeeded"
+
+# TODO: Need to get correct valures for SourceControlAccountId and SourceControlJobId for each job that runs.
 $SourceControlAccountId = "f819de14-a688-45ca-9d82-56f03ea6ec64"
 $SourceControlJobId = "f819de14-a688-45ca-9d82-56f03ea6ec65"
 
-$TestMode = $false
-
-# This function logs output to the host. 
+# This function logs output to the host via Write-Verbose
 #
 function Write-Log
 {
@@ -25,15 +28,11 @@ function Write-Log
     (
         [ValidateNotNullOrEmpty()]
 		[String]
-        $Message,
-
-        [ValidateNotNullOrEmpty()]
-		[String]
-        $Color
+        $Message
     )
 
     $Message = "Sync-VSTSGit: - $Message"
-    Write-host $Message
+    Write-Verbose $Message -Verbose
 }
 
 function Write-Tracing
@@ -41,6 +40,7 @@ function Write-Tracing
 	Param
     (
         [ValidateNotNullOrEmpty()]
+        [ValidateSet("Informational", "Informational", "Warning", "Succeeded", IgnoreCase = $True)]
 		[String]
         $Level,
         [ValidateNotNullOrEmpty()]
@@ -48,39 +48,29 @@ function Write-Tracing
         $Message 
 	)
 
-	if ($Level -eq $InformationalLevel)
-	{
-        if (-not $TestMode)
+    if (-not $TestMode)
+    {
+        switch ($Level)
         {
-            [Orchestrator.Shared.Shared.TraceEventSource]::Log.SourceControlRunbookInformational($SourceControlRunbookName, $SourceControlAccountId, $SourceControlJobId, $Message)
-        }
+            $InformationalLevel {
+                [Orchestrator.Shared.Shared.TraceEventSource]::Log.SourceControlRunbookInformational($SourceControlRunbookName, $SourceControlAccountId, $SourceControlJobId, $Message)
+            }
 
-        Write-Log -message ("Level: $InformationalLevel --> " + $Message)
+            $WarningLevel {
+                [Orchestrator.Shared.Shared.TraceEventSource]::Log.SourceControlRunbookWarning($SourceControlRunbookName, $SourceControlAccountId, $SourceControlJobId, $Message)
+            }
+
+            $ErrorLevel {
+                [Orchestrator.Shared.Shared.TraceEventSource]::Log.SourceControlRunbookError($SourceControlRunbookName, $SourceControlAccountId, $SourceControlJobId, $Message)
+            }
+
+            $SucceededLevel {
+                [Orchestrator.Shared.Shared.TraceEventSource]::Log.SourceControlRunbookSucceeded($SourceControlRunbookName, $SourceControlAccountId, $SourceControlJobId, $Message)
+            }
+        }
     }
-	elseif ($Level -eq $WarningLevel)
-	{
-        if (-not $TestMode)
-        {
-            [Orchestrator.Shared.Shared.TraceEventSource]::Log.SourceControlRunbookWarning($SourceControlRunbookName, $SourceControlAccountId, $SourceControlJobId, $Message)
-        }
-        Write-Log -message ("Level: $WarningLevel --> " + $Message)
-	}
-	elseif ($Level -eq $ErrorLevel)
-	{
-        if (-not $TestMode)
-        {
-            [Orchestrator.Shared.Shared.TraceEventSource]::Log.SourceControlRunbookError($SourceControlRunbookName, $SourceControlAccountId, $SourceControlJobId, $Message)
-        }        
-        Write-Log -message ("Level: $ErrorLevel --> " + $Message)
-	}
-	elseif ($Level -eq $SucceededLevel)
-	{
-        if (-not $TestMode)
-        {
-            [Orchestrator.Shared.Shared.TraceEventSource]::Log.SourceControlRunbookSucceeded($SourceControlRunbookName, $SourceControlAccountId, $SourceControlJobId)
-        }
-        Write-Log -message ("Level: $SucceededLevel --> " + $Message)
-	}
+
+    Write-Log -message ("Level: $Level --> " + $Message)
 }
 
 function Get-TFSBasicAuthHeader
@@ -146,7 +136,6 @@ function Invoke-TFSGetRestMethod
     
     $Result = Invoke-RestMethod -Uri $Uri -headers $headers -Method Get
 
-    # Return array values to make them more PowerShell friendly
     if ($Result.value -ne $null)
     {
         return $Result.value
@@ -207,7 +196,6 @@ function Get-TFSGitFolderItem
         $_
     }
 } 
-
  
 function Get-TFSGitFile
 {
@@ -485,46 +473,47 @@ try
 
 
      # Create a directory PowerShell scripts we are going to import into automation account
-    $PSFolderPath = Join-Path $env:temp  (new-guid).Guid
-    New-Item -ItemType Directory -Path $PSFolderPath -Force
+    #$PSFolderPath = Join-Path $env:temp  (new-guid).Guid
+    #New-Item -ItemType Directory -Path $PSFolderPath -Force | Out-Null
 
-    try
-    {    
-        $NumberOfFilesSynced = 0    
-        foreach ($File in $FilesChanged)
+    #try
+    #{    
+    $NumberOfFilesSynced = 0    
+    foreach ($File in $FilesChanged)
+    {
+        if (-not $File.isFolder)
         {
-            if (-not $File.isFolder)
+            if ($File.path -match ".ps1")
             {
-                if ($File.path -match ".ps1")
+                Write-Tracing -Level $InformationalLevel -Message ("Syncing file: " + $File.path)
+                $Content = Get-TFSGitFile -Connection $Connection -RepoConnectionInfo $RepoConnectionInfo -RepoID $RepoInformation.id -BlobObjectID $File.objectID -Path $File.Path
+                #$Content = Get-Content -Path $FilePath -Raw
+
+                if ($TestMode)
                 {
-                    Write-Tracing -Level $InformationalLevel -Message ("Syncing file: " + $File.path)
-                    $FilePath = Get-TFSGitFile -Connection $Connection -RepoConnectionInfo $RepoConnectionInfo -RepoID $RepoInformation.id -BlobObjectID $File.objectID -Path $File.Path -LocalPath $PSFolderPath
-                    $Content = Get-Content -Path $FilePath -Raw
+                    Write-Tracing -Level $InformationalLevel -Message ("File content: " + $Content)
+                }
 
-                    if ($TestMode)
-                    {
-                        Write-Tracing -Level $InformationalLevel -Message ("File content: " + $Content)
-                    }
-
-                    # Remove the file extension and any special character from the file name.
-                    $FileInfo = [IO.FileInfo]::new($File.Path)
-                    $FileName = $FileInfo.BaseName
+                # Remove the file extension and any special character from the file name.
+                $FileInfo = [IO.FileInfo]::new($File.Path)
+                $FileName = $FileInfo.BaseName
                 
-                    Write-Tracing -Level $InformationalLevel -Message ("Calling Set-AutomationRunbook " + $FileName)
-                    if (-not $TestMode)
-                    {
-                        Set-AutomationRunbook -Name $FileName -Definition $Content
-                    }
-                    Write-Tracing -Level $InformationalLevel -Message ("Set-AutomationRunbook " + $FileName + " completed")
-                    $NumberOfFilesSynced++
-                }
-                else
+                Write-Tracing -Level $InformationalLevel -Message ("Calling Set-AutomationRunbook " + $FileName)
+                if (-not $TestMode)
                 {
-                    Write-Tracing -Level $InformationalLevel -Message ("Skipping file: " + $File.path)
+                    Set-AutomationRunbook -Name $FileName -Definition $Content
                 }
+                Write-Tracing -Level $InformationalLevel -Message ("Set-AutomationRunbook " + $FileName + " completed")
+                $NumberOfFilesSynced++
+            }
+            else
+            {
+                Write-Tracing -Level $InformationalLevel -Message ("Skipping file: " + $File.path)
             }
         }
-        Write-Tracing -Level $InformationalLevel -Message ("Total files synced: " + $NumberOfFilesSynced)
+    }
+    Write-Tracing -Level $InformationalLevel -Message ("Total files synced: " + $NumberOfFilesSynced)
+    <#
     }
     finally
     {
@@ -533,6 +522,7 @@ try
             Remove-Item -Path $PSFolderPath -Recurse -Force -ea SilentlyContinue
         }        
     }
+    #>
 }
 catch 
 {
