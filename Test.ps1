@@ -1,13 +1,16 @@
 Param
 (
     [Parameter(Mandatory=$true)]
-	[String] $SourceControlName,
-
-	[Parameter(Mandatory=$true)]
-	[Object] $SourceControlInfo,
-
+    [String]
+    $SourceControlName,
+    
+    [Parameter(Mandatory=$true)]
+    [Object]
+    $SourceControlInfo,
+    
     [Parameter(Mandatory=$false)]
-	[Switch] $TestMode
+	[Switch]
+    $TestMode
 )
 
 $SourceControlRunbookName = "Sync-SourceControl.ps1"
@@ -38,14 +41,16 @@ function Write-Log
 function Write-Tracing
 {
 	Param
-    (
-        [ValidateNotNullOrEmpty()]
-        [ValidateSet("Informational", "Informational", "Warning", "Succeeded", IgnoreCase = $True)]
+    (        
+        [ValidateSet("Informational", "Warning", "ErrorLevel", "Succeeded", IgnoreCase = $True)]
 		[String]
         $Level,
         [ValidateNotNullOrEmpty()]
 		[String]
-        $Message 
+        $Message,
+        [Parameter(Mandatory=$false)]
+	    [Switch]
+        $DisplayMessageToUser
 	)
 
     if (-not $TestMode)
@@ -70,7 +75,10 @@ function Write-Tracing
         }
     }
 
-    Write-Log -message ("Level: $Level --> " + $Message)
+    if ($DisplayMessageToUser)
+    {
+        Write-Log -message ("Level: $Level --> " + $Message)
+    }
 }
 
 function Get-TFSBasicAuthHeader
@@ -125,15 +133,9 @@ function Invoke-TFSGetRestMethod
     
     # Set up Basic authentication for use against the Visual Studio Online account
     # This needs to be enabled on your account - http://www.visualstudio.com/en-us/integrate/get-started/auth/overview 
-    $headers = SetBasicAuthHeader -Username $Connection.Username -Password $Connection.Password
+    $headers = SetBasicAuthHeader -Password $Connection.Password
 
     Write-Tracing -Level $InformationalLevel -Message "Invoke-RestMethod -Uri $Uri"
-    foreach ($key in $headers.Keys)
-    {
-        $Message = "[" + $key + " = " + $headers[$key] + "]"
-        Write-Tracing -Level $InformationalLevel -Message $Message
-    }
-    
     $Result = Invoke-RestMethod -Uri $Uri -headers $headers -Method Get
 
     if ($Result.value -ne $null)
@@ -182,7 +184,6 @@ function Get-TFSGitFolderItem
         $RecurseLevel = "onelevel"
     }
 
-    #$Uri = "https://" + $Connection.Account + ".visualstudio.com/defaultcollection/_apis/git/$Project/repositories/$Repo/items"
     $Project = $RepoConnectionInfo.ProjectName
     $Repo = $RepoConnectionInfo.RepoName
     $Uri = "https://" + $RepoConnectionInfo.AccountName + "/defaultcollection/_apis/git/$Project/repositories/$Repo/items"
@@ -221,31 +222,13 @@ function Get-TFSGitFile
 
         [Parameter(Mandatory=$true)]
         [String]
-        $Path,
-
-        [Parameter(Mandatory=$false)]
-        [String]
-        $LocalPath
+        $Path
     )
 
-    #$Uri = "https://" + $Connection.Account + ".visualstudio.com/DefaultCollection/_apis/git/repositories/$RepoID/blobs/$BlobObjectID"
     $Uri = "https://" + $RepoConnectionInfo.AccountName + "/DefaultCollection/_apis/git/repositories/$RepoID/blobs/$BlobObjectID"
-
-    Write-Tracing -Level $InformationalLevel -Message "Uri: $Uri"
     $Result = Invoke-TFSGetRestMethod -Connection $Connection -Uri $Uri -QueryString "&scopePath=$Path"
 
-    # If local path is specified, create the file in that directory and return the full path
-    if ($LocalPath)
-    {
-        $FileName = Split-Path $Path -Leaf
-        $FilPath = Join-Path $LocalPath $FileName
-        $Result | Set-Content -Encoding Default -Path $FilPath -Force
-        $FilPath
-    }
-    else
-    {
-        $Result
-    }
+    return $Result
 } 
 
 <#
@@ -359,27 +342,19 @@ function Get-TFSGitRepo
 	}
 }
 
+# Set up authentication for use against the Visual Studio Online account
+# This needs to be enabled on your account - http://www.visualstudio.com/en-us/integrate/get-started/auth/overview
 function SetBasicAuthHeader
 {
     Param
     (
         [Parameter(Mandatory=$true)]
         [ValidateNotNullOrEmpty()]
-        [String] $Password,
-        [string] $Username       
+        [String]
+        $Password      
     )
 
-    if ([string]::IsNullOrEmpty($Username))
-    {
-        $VSAuthCredential =  ":" + $Password
-    }
-    else
-    {
-        $VSAuthCredential = $Username + ":" + $Password
-    }
-
-    # Set up authentication for use against the Visual Studio Online account
-    # This needs to be enabled on your account - http://www.visualstudio.com/en-us/integrate/get-started/auth/overview 
+    $VSAuthCredential =  ":" + $Password    
     $VSAuth = [System.Text.Encoding]::UTF8.GetBytes($VSAuthCredential)
     $VSAuth = [System.Convert]::ToBase64String($VSAuth)
     $BasicAuthHeader = @{Authorization=("Basic {0}" -f $VSAuth)}
@@ -393,16 +368,10 @@ function Set-ConnectionValues
     (
         [ValidateNotNullOrEmpty()]
         [string]
-        $UserName,
-        [ValidateNotNullOrEmpty()]
-        [string]
         $Password
     )
     
-    $ConnectionValues = @{
-        "UserName"=$UserName
-        "Password"=$Password
-    }
+    $ConnectionValues = @{ "Password"=$Password }
 
     return $ConnectionValues
 }
@@ -415,118 +384,96 @@ function GetAPIVersion
 
 try
 {
-    Write-Log -message "VSTS-Git Sync started."
+    Write-Tracing -Level $InformationalLevel -message "VSTS-Git Sync started."
 
     # Setting variables
-    Write-Tracing -Level $InformationalLevel -Message "Setting Source Control object properties."
+    Write-Tracing -Level $InformationalLevel -Message "Setting Source Control object properties." -DisplayMessageToUser
     $RepoUrl = $SourceControlInfo.RepoUrl
     $GitBranch = $SourceControlInfo.Branch
     $FolderPath = $SourceControlInfo.FolderPath
 
-    Write-Tracing -Level $InformationalLevel -Message "[RepoUrl = $RepoUrl] [GitBranch  = $GitBranch] [FolderPath = $FolderPath]"
+    Write-Tracing -Level $InformationalLevel -Message "[RepoUrl = $RepoUrl] [GitBranch  = $GitBranch] [FolderPath = $FolderPath]" -DisplayMessageToUser
 
     # Get the access token
-    Write-Tracing -Level $InformationalLevel -Message "Retrieving AccessToken."
+    Write-Tracing -Level $InformationalLevel -Message "Retrieving SecurityToken." -DisplayMessageToUser
 
     if ($TestMode)
     {
-        #$AccessToken = "f3uj6zdyxy73qpyf7rephdskhw5upfjfc2ml2z2f2jn26u4khkpq"
-        
-        # Miao Zi site
-        #$AccessToken = "k4k4xidzxzovgs2j2dde2du5dbqa3b6y3h6yvooasd72oaqazllq"
-        $AccessToken = "erbqh33rcw6cvv7bahf3asx2pauopixa6w5vefciwe747qqshqka"
-
+        $SecurityToken = "erbqh33rcw6cvv7bahf3asx2pauopixa6w5vefciwe747qqshqka"
     }
     else
     {
         $cred = Get-AutomationPSCredential -Name $SourceControlName
-        $AccessToken = $cred.GetNetworkCredential().Password
+        $SecurityToken = $cred.GetNetworkCredential().Password
     }
 
-    if (!$AccessToken)
+    if (-not $SecurityToken)
     {
-        throw "Unable to retrieve security token."
+        $errorId = "UnableToRetrieveSecurityToken"
+        $errorCategory = [System.Management.Automation.ErrorCategory]::InvalidOperation
+        $errorMessage = "Unable to retrieve security token"
+        $exception = [System.InvalidOperationException]::New($errorMessage)
+        $errorRecord = [System.Management.Automation.ErrorRecord]::New($exception, $errorId, $errorCategory, $null)
+        $PSCmdlet.ThrowTerminatingError($errorRecord)
     }
+
+    Write-Tracing -Level $InformationalLevel -Message "SecurityToken retrieved." -DisplayMessageToUser
 
     # Set the connection variables
     Write-Tracing -Level $InformationalLevel -Message "Setting connection values."
-    $Connection = Set-ConnectionValues -Password $AccessToken
-    $UserName = $Connection.UserName
-    $Password = $Connection.Password
-    Write-Tracing -Level $InformationalLevel -Message "[UserName = $UserName] [Password = $Password]"
+    $Connection = Set-ConnectionValues -Password $SecurityToken
 
     # Parse the repo Url to get the account, project and repo name.
-    Write-Tracing -Level $InformationalLevel -Message "Calling Get-RepoConnectionInformation"
+    Write-Tracing -Level $InformationalLevel -Message "Parse the repo url: $RepoUrl" -DisplayMessageToUser
     $RepoConnectionInfo = Get-RepoConnectionInformation -RepoUrl $RepoUrl
     $AccountName = $RepoConnectionInfo.AccountName
     $RepoName = $RepoConnectionInfo.RepoName
     $ProjectName = $RepoConnectionInfo.ProjectName
-    Write-Tracing -Level $InformationalLevel -Message "RepoInfoValues: [AccountName = $AccountName] [RepoName = $RepoName] [ProjectName = $ProjectName]"
+    Write-Tracing -Level $InformationalLevel -Message "RepoInfoValues: [AccountName = $AccountName] [RepoName = $RepoName] [ProjectName = $ProjectName]" -DisplayMessageToUser
 
-    Write-Tracing -Level $InformationalLevel -Message "Calling Get-TFSGitRepo"
+    Write-Tracing -Level $InformationalLevel -Message "Validate that the VSO Git Repro exist." -DisplayMessageToUser
     $RepoInformation = Get-TFSGitRepo -Connection $Connection -RepoConnectionInfo $RepoConnectionInfo
-    Write-Tracing -Level $InformationalLevel -Message "VSOGitRepo retrieved"
+    Write-Tracing -Level $InformationalLevel -Message "VSOGitRepo retrieved" -DisplayMessageToUser
 
-    Write-Tracing -Level $InformationalLevel -Message "Get the list of files in the repo."
+    Write-Tracing -Level $InformationalLevel -Message "Get the list of files in the folder to sync." -DisplayMessageToUser
     $FilesChanged = @(Get-TFSGitFolderItem -Connection $Connection -FolderPath $FolderPath -Branch $GitBranch -RepoConnectionInfo $RepoConnectionInfo)
-    Write-Tracing -Level $InformationalLevel -Message ("Number of items in the folder to sync: " + $FilesChanged.Count)
 
-
-     # Create a directory PowerShell scripts we are going to import into automation account
-    #$PSFolderPath = Join-Path $env:temp  (new-guid).Guid
-    #New-Item -ItemType Directory -Path $PSFolderPath -Force | Out-Null
-
-    #try
-    #{    
-    $NumberOfFilesSynced = 0    
+    Write-Tracing -Level $InformationalLevel -Message ("Syncing *.ps1 files...") -DisplayMessageToUser
+    $NumberOfFilesSynced = 0
     foreach ($File in $FilesChanged)
     {
         if (-not $File.isFolder)
         {
+            # Remove the file extension and any special character from the file name.
+            $FileInfo = [IO.FileInfo]::new($File.Path)
+            $FileName = $FileInfo.BaseName
+
+            $Message = "File " + $FileInfo.Name
             if ($File.path -match ".ps1")
             {
-                Write-Tracing -Level $InformationalLevel -Message ("Syncing file: " + $File.path)
                 $Content = Get-TFSGitFile -Connection $Connection -RepoConnectionInfo $RepoConnectionInfo -RepoID $RepoInformation.id -BlobObjectID $File.objectID -Path $File.Path
-                #$Content = Get-Content -Path $FilePath -Raw
-
-                if ($TestMode)
-                {
-                    Write-Tracing -Level $InformationalLevel -Message ("File content: " + $Content)
-                }
-
-                # Remove the file extension and any special character from the file name.
-                $FileInfo = [IO.FileInfo]::new($File.Path)
-                $FileName = $FileInfo.BaseName
-                
-                Write-Tracing -Level $InformationalLevel -Message ("Calling Set-AutomationRunbook " + $FileName)
+                                
                 if (-not $TestMode)
                 {
+                    Write-Tracing -Level $InformationalLevel -Message ("Calling Set-AutomationRunbook " + $FileName)
                     Set-AutomationRunbook -Name $FileName -Definition $Content
+                    Write-Tracing -Level $InformationalLevel -Message ("Set-AutomationRunbook " + $FileName + " completed")
                 }
-                Write-Tracing -Level $InformationalLevel -Message ("Set-AutomationRunbook " + $FileName + " completed")
+                $Message += " synced"
                 $NumberOfFilesSynced++
             }
             else
             {
-                Write-Tracing -Level $InformationalLevel -Message ("Skipping file: " + $File.path)
+                $Message += " skipped"
             }
+            Write-Tracing -Level $InformationalLevel -Message $Message -DisplayMessageToUser
         }
     }
-    Write-Tracing -Level $InformationalLevel -Message ("Total files synced: " + $NumberOfFilesSynced)
-    <#
-    }
-    finally
-    {
-        if (Test-Path $PSFolderPath)
-        {
-            Remove-Item -Path $PSFolderPath -Recurse -Force -ea SilentlyContinue
-        }        
-    }
-    #>
+    Write-Tracing -Level $InformationalLevel -Message ("Total files synced: " + $NumberOfFilesSynced) -DisplayMessageToUser
 }
 catch 
 {
     throw $_
 }
 
-Write-Tracing -Level $InformationalLevel -Message "Script execution completed."
+Write-Tracing -Level $InformationalLevel -Message "Script execution completed." -DisplayMessageToUser
