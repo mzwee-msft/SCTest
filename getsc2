@@ -1,0 +1,10 @@
+$var = Get-AutomationSourceControl -Name "SC1"
+$var.Name
+$var.RepoUrl
+$var.SourceType
+$var.Branch
+$var.FolderPath
+$var.AutoSync
+$var.SecurityToken
+
+$var
