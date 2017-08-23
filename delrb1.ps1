@@ -1,1 +1,1 @@
-Delete-AutomationRunbook -Name "getsc1" -Force
+Remove-AutomationRunbook -Name "getsc1" -Force
