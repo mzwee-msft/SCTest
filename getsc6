@@ -1,0 +1,6 @@
+$var = Get-AutomationSourceControl -Name "SC1" 
+$var
+$var.GetType()
+$st = $var.SecurityToken
+$st.GetType()
+([string]$st).GetType()
