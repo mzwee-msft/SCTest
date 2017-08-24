@@ -1,0 +1,1 @@
+Get-AutomationSourceControl -Name "SC1" | fl * -force
