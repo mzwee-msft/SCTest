@@ -5,7 +5,7 @@ Param
     $SourceControlName,
     
     [Parameter(Mandatory=$false)]
-	  [Switch]
+    [Switch]
     $TestMode
 )
 
